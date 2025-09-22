@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Plantilla para desplegar la infraestructura de un dashboard de costos. 
+  Incluye un bucket S3 para reportes, un rol de IAM para Lambda y una funcion Lambda para procesar datos de costos.
+
+Parameters:
+  ReportBucketName:
+    Type: String
+    Description: Nombre unico para el bucket S3 donde se almacenaran los reportes de costos.
+
+Resources:
+  # 1. Bucket S3 para almacenar los reportes de costos
+  CostReportBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref ReportBucketName
+
+  # 2. Rol de IAM para la funcion Lambda
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: S3ReadAndCloudWatchPutMetrics
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                Resource: !Sub 'arn:aws:s3:::${ReportBucketName}/*'
+              - Effect: Allow
+                Action:
+                  - 'cloudwatch:PutMetricData'
+                Resource: '*'
+
+  # 3. Funcion Lambda para procesar los reportes
+  CostProcessorFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: 'index.handler'
+      Runtime: 'python3.9'
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      MemorySize: 128
+      Code:
+        # Codigo de la funcion Lambda, puede ser un archivo ZIP en S3 o un bloque de codigo.
+        # Para este ejemplo, se usa un codigo simple. En la vida real, se procesaria el archivo CUR.
+        ZipFile: |
+          import json
+          import boto3
+          import urllib.parse
+          import gzip
+          
+          def handler(event, context):
+              s3_client = boto3.client('s3')
+              cw_client = boto3.client('cloudwatch')
+              
+              print("Evento recibido:", json.dumps(event, indent=2))
+              
+              bucket = event['Records'][0]['s3']['bucket']['name']
+              key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+              
+              try:
+                  print(f"Procesando el archivo: {key} del bucket: {bucket}")
+                  # Aquí se agregaría la lógica para leer y procesar el archivo CUR,
+                  # calcular el costo total y por servicio.
+                  
+                  # Ejemplo de metrica ficticia. La funcion real debe calcular esto.
+                  costo_calculado = 12.34
+                  
+                  # Publicar una metrica en CloudWatch
+                  response = cw_client.put_metric_data(
+                      Namespace='Custom/CostDashboard',
+                      MetricData=[
+                          {
+                              'MetricName': 'TotalDailyCost',
+                              'Value': costo_calculado,
+                              'Unit': 'Dollars'
+                          },
+                      ]
+                  )
+                  print("Metrica publicada en CloudWatch:", response)
+                  return 'OK'
+              except Exception as e:
+                  print(e)
+                  raise e
+
+  # 4. Permiso para que S3 invoque la funcion Lambda
+  S3LambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref CostProcessorFunction
+      Principal: 's3.amazonaws.com'
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:aws:s3:::${ReportBucketName}'
+
+  # 5. Dashboard de CloudWatch (opcional, pero util para el examen)
+  CostDashboard:
+    Type: 'AWS::CloudWatch::Dashboard'
+    Properties:
+      DashboardName: 'SmallBusinessCostDashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "Custom/CostDashboard", "TotalDailyCost", { "label": "Costo Diario Total", "period": 86400 } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Costo Diario Total"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  ReportBucketName:
+    Description: El nombre del bucket S3 para los reportes de costos.
+    Value: !Ref ReportBucketName
+  LambdaFunctionName:
+    Description: El nombre de la funcion Lambda para procesar los costos.
+    Value: !Ref CostProcessorFunction
